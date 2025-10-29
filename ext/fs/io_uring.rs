@@ -88,11 +88,11 @@ pub async fn read_file_with_io_uring(
   let file = IoUringFile::open(path).await?;
 
   // Get file size for buffer allocation
-  let metadata = file.statx().submit().await?;
+  let metadata = file.statx().await?;
   let size = metadata.stx_size as usize;
 
   // Read the entire file
-  let (result, buf) = file.read_at(vec![0u8; size], 0).submit().await;
+  let (result, buf) = file.read_at(vec![0u8; size], 0).await;
   result?;
 
   Ok(buf)
@@ -115,7 +115,7 @@ pub async fn write_file_with_io_uring(
   result?;
 
   // Ensure data is flushed
-  file.sync_all().submit().await?;
+  file.sync_all().await?;
 
   Ok(())
 }
@@ -128,7 +128,7 @@ pub async fn stat_with_io_uring(
 ) -> std::io::Result<libc::statx> {
   // Open the file to get its metadata
   let file = IoUringFile::open(path).await?;
-  file.statx().submit().await
+  file.statx().await
 }
 
 #[cfg(test)]

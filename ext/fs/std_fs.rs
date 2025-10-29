@@ -12,10 +12,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-#[cfg(unix)]
-use std::os::unix::fs::FileTypeExt;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 
 use deno_core::unsync::spawn_blocking;
 use deno_io::StdFileResourceInner;
@@ -227,14 +223,14 @@ impl FileSystem for RealFs {
             atime: Some(statx_buf.stx_atime.tv_sec as u64),
             birthtime: Some(statx_buf.stx_btime.tv_sec as u64),
             ctime: Some(statx_buf.stx_ctime.tv_sec as u64),
-            dev: Some(statx_buf.stx_dev_major as u64),
+            dev: statx_buf.stx_dev_major as u64,
             ino: Some(statx_buf.stx_ino),
             mode,
             nlink: Some(statx_buf.stx_nlink as u64),
-            uid: Some(statx_buf.stx_uid),
-            gid: Some(statx_buf.stx_gid),
-            rdev: Some(statx_buf.stx_rdev_major as u64),
-            blksize: Some(statx_buf.stx_blksize as u64),
+            uid: statx_buf.stx_uid,
+            gid: statx_buf.stx_gid,
+            rdev: statx_buf.stx_rdev_major as u64,
+            blksize: statx_buf.stx_blksize as u64,
             blocks: Some(statx_buf.stx_blocks),
             is_block_device: (mode & libc::S_IFMT) == libc::S_IFBLK,
             is_char_device: (mode & libc::S_IFMT) == libc::S_IFCHR,

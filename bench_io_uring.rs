@@ -13,7 +13,6 @@
 //! ```
 
 use std::fs;
-use std::io::Write;
 use std::time::Instant;
 
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
@@ -294,7 +293,7 @@ fn bench_io_uring_write(size: usize, iterations: usize) -> f64 {
       let file = tokio_uring::fs::File::create(&path).await.unwrap();
       let (result, _) = file.write_at(data_clone, 0).submit().await;
       result.unwrap();
-      file.sync_all().submit().await.unwrap();
+      file.sync_all().await.unwrap();
     });
   }
   let elapsed = start.elapsed();
@@ -316,10 +315,10 @@ fn bench_io_uring_read(size: usize, iterations: usize) -> f64 {
     let path = format!("bench_uring_read_{}.tmp", i);
     tokio_uring::start(async move {
       let file = tokio_uring::fs::File::open(&path).await.unwrap();
-      let metadata = file.statx().submit().await.unwrap();
+      let metadata = file.statx().await.unwrap();
       let size = metadata.stx_size as usize;
       let buf = vec![0u8; size];
-      let (result, _) = file.read_at(buf, 0).submit().await;
+      let (result, _) = file.read_at(buf, 0).await;
       result.unwrap();
     });
   }
@@ -337,7 +336,7 @@ fn bench_io_uring_stat(iterations: usize) -> f64 {
   for _ in 0..iterations {
     tokio_uring::start(async {
       let file = tokio_uring::fs::File::open("bench_uring_stat.tmp").await.unwrap();
-      file.statx().submit().await.unwrap()
+      file.statx().await.unwrap()
     });
   }
   let elapsed = start.elapsed();
@@ -386,15 +385,15 @@ fn bench_io_uring_concurrent(size: usize, concurrent: usize) -> f64 {
         let file = tokio_uring::fs::File::create(&path).await.unwrap();
         let (result, _) = file.write_at(data_clone, 0).submit().await;
         result.unwrap();
-        file.sync_all().submit().await.unwrap();
+        file.sync_all().await.unwrap();
         drop(file);
 
         // Read
         let file = tokio_uring::fs::File::open(&path).await.unwrap();
-        let metadata = file.statx().submit().await.unwrap();
+        let metadata = file.statx().await.unwrap();
         let size = metadata.stx_size as usize;
         let buf = vec![0u8; size];
-        let (result, buf) = file.read_at(buf, 0).submit().await;
+        let (result, buf) = file.read_at(buf, 0).await;
         result.unwrap();
         buf
       });
