@@ -292,9 +292,9 @@ fn bench_io_uring_write(size: usize, iterations: usize) -> f64 {
     let path = format!("bench_uring_write_{}.tmp", i);
     tokio_uring::start(async move {
       let file = tokio_uring::fs::File::create(&path).await.unwrap();
-      let (result, _) = file.write_at(data_clone, 0).await;
+      let (result, _) = file.write_at(data_clone, 0).submit().await;
       result.unwrap();
-      file.sync_all().await.unwrap();
+      file.sync_all().submit().await.unwrap();
     });
   }
   let elapsed = start.elapsed();
@@ -316,10 +316,10 @@ fn bench_io_uring_read(size: usize, iterations: usize) -> f64 {
     let path = format!("bench_uring_read_{}.tmp", i);
     tokio_uring::start(async move {
       let file = tokio_uring::fs::File::open(&path).await.unwrap();
-      let metadata = file.statx().await.unwrap();
+      let metadata = file.statx().submit().await.unwrap();
       let size = metadata.stx_size as usize;
       let buf = vec![0u8; size];
-      let (result, _) = file.read_at(buf, 0).await;
+      let (result, _) = file.read_at(buf, 0).submit().await;
       result.unwrap();
     });
   }
@@ -336,7 +336,8 @@ fn bench_io_uring_stat(iterations: usize) -> f64 {
   let start = Instant::now();
   for _ in 0..iterations {
     tokio_uring::start(async {
-      tokio_uring::fs::metadata("bench_uring_stat.tmp").await.unwrap()
+      let file = tokio_uring::fs::File::open("bench_uring_stat.tmp").await.unwrap();
+      file.statx().submit().await.unwrap()
     });
   }
   let elapsed = start.elapsed();
@@ -383,17 +384,17 @@ fn bench_io_uring_concurrent(size: usize, concurrent: usize) -> f64 {
       let handle = tokio_uring::spawn(async move {
         // Write
         let file = tokio_uring::fs::File::create(&path).await.unwrap();
-        let (result, _) = file.write_at(data_clone, 0).await;
+        let (result, _) = file.write_at(data_clone, 0).submit().await;
         result.unwrap();
-        file.sync_all().await.unwrap();
+        file.sync_all().submit().await.unwrap();
         drop(file);
 
         // Read
         let file = tokio_uring::fs::File::open(&path).await.unwrap();
-        let metadata = file.statx().await.unwrap();
+        let metadata = file.statx().submit().await.unwrap();
         let size = metadata.stx_size as usize;
         let buf = vec![0u8; size];
-        let (result, buf) = file.read_at(buf, 0).await;
+        let (result, buf) = file.read_at(buf, 0).submit().await;
         result.unwrap();
         buf
       });

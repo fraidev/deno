@@ -5,26 +5,8 @@
 //! This module provides high-performance asynchronous file I/O using Linux's io_uring
 //! interface. io_uring is only available on Linux kernel >= 5.6.
 
-use std::borrow::Cow;
-use std::io::ErrorKind;
-use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::OnceLock;
-
-use deno_io::fs::File;
-use deno_io::fs::FsResult;
-use deno_io::fs::FsStat;
-use deno_permissions::CheckedPath;
-use deno_permissions::CheckedPathBuf;
 use tokio_uring::fs::File as IoUringFile;
-
-use crate::FileSystem;
-use crate::OpenOptions;
-use crate::RealFs;
-use crate::interface::FsDirEntry;
-use crate::interface::FsFileType;
 
 /// Minimum required Linux kernel version for io_uring support.
 const MIN_KERNEL_VERSION: (u32, u32) = (5, 6);
@@ -106,11 +88,11 @@ pub async fn read_file_with_io_uring(
   let file = IoUringFile::open(path).await?;
 
   // Get file size for buffer allocation
-  let metadata = file.statx().await?;
+  let metadata = file.statx().submit().await?;
   let size = metadata.stx_size as usize;
 
   // Read the entire file
-  let (result, buf) = file.read_at(vec![0u8; size], 0).await;
+  let (result, buf) = file.read_at(vec![0u8; size], 0).submit().await;
   result?;
 
   Ok(buf)
@@ -129,20 +111,24 @@ pub async fn write_file_with_io_uring(
   let file = IoUringFile::create(path).await?;
 
   // Write all data
-  let (result, _) = file.write_at(data, 0).await;
+  let (result, _) = file.write_at(data, 0).submit().await;
   result?;
 
   // Ensure data is flushed
-  file.sync_all().await?;
+  file.sync_all().submit().await?;
 
   Ok(())
 }
 
 /// Helper to get file metadata using io_uring.
+///
+/// Returns a statx structure which contains file metadata.
 pub async fn stat_with_io_uring(
   path: impl AsRef<std::path::Path>,
-) -> std::io::Result<std::fs::Metadata> {
-  tokio_uring::fs::metadata(path).await
+) -> std::io::Result<libc::statx> {
+  // Open the file to get its metadata
+  let file = IoUringFile::open(path).await?;
+  file.statx().submit().await
 }
 
 #[cfg(test)]

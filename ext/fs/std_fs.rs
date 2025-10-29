@@ -12,6 +12,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 use deno_core::unsync::spawn_blocking;
 use deno_io::StdFileResourceInner;
 use deno_io::fs::File;
@@ -203,37 +208,39 @@ impl FileSystem for RealFs {
         let path_owned = path.to_path_buf();
         return spawn_blocking(move || {
           // Run tokio-uring in a blocking context
-          let metadata = tokio_uring::start(async move {
+          let statx_buf = tokio_uring::start(async move {
             io_uring::stat_with_io_uring(&path_owned).await
           })?;
 
-          // Convert std::fs::Metadata to FsStat
-          #[cfg(unix)]
-          {
-            use std::os::unix::fs::MetadataExt;
-            Ok(FsStat {
-              is_file: metadata.is_file(),
-              is_directory: metadata.is_dir(),
-              is_symlink: metadata.is_symlink(),
-              size: metadata.len(),
-              mtime: metadata.mtime().into(),
-              atime: metadata.atime().into(),
-              birthtime: metadata.ctime().into(),
-              dev: metadata.dev(),
-              ino: metadata.ino(),
-              mode: metadata.mode(),
-              nlink: metadata.nlink(),
-              uid: metadata.uid(),
-              gid: metadata.gid(),
-              rdev: metadata.rdev(),
-              blksize: metadata.blksize(),
-              blocks: metadata.blocks(),
-              is_block_device: metadata.file_type().is_block_device(),
-              is_char_device: metadata.file_type().is_char_device(),
-              is_fifo: metadata.file_type().is_fifo(),
-              is_socket: metadata.file_type().is_socket(),
-            })
-          }
+          // Convert libc::statx to FsStat
+          let mode = statx_buf.stx_mode as u32;
+          let is_file = (mode & libc::S_IFMT) == libc::S_IFREG;
+          let is_dir = (mode & libc::S_IFMT) == libc::S_IFDIR;
+          let is_symlink = (mode & libc::S_IFMT) == libc::S_IFLNK;
+
+          Ok(FsStat {
+            is_file,
+            is_directory: is_dir,
+            is_symlink,
+            size: statx_buf.stx_size,
+            mtime: Some(statx_buf.stx_mtime.tv_sec as u64),
+            atime: Some(statx_buf.stx_atime.tv_sec as u64),
+            birthtime: Some(statx_buf.stx_btime.tv_sec as u64),
+            ctime: Some(statx_buf.stx_ctime.tv_sec as u64),
+            dev: Some(statx_buf.stx_dev_major as u64),
+            ino: Some(statx_buf.stx_ino),
+            mode,
+            nlink: Some(statx_buf.stx_nlink as u64),
+            uid: Some(statx_buf.stx_uid),
+            gid: Some(statx_buf.stx_gid),
+            rdev: Some(statx_buf.stx_rdev_major as u64),
+            blksize: Some(statx_buf.stx_blksize as u64),
+            blocks: Some(statx_buf.stx_blocks),
+            is_block_device: (mode & libc::S_IFMT) == libc::S_IFBLK,
+            is_char_device: (mode & libc::S_IFMT) == libc::S_IFCHR,
+            is_fifo: (mode & libc::S_IFMT) == libc::S_IFIFO,
+            is_socket: (mode & libc::S_IFMT) == libc::S_IFSOCK,
+          })
         })
         .await?;
       }
