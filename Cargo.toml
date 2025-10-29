@@ -52,6 +52,7 @@ members = [
   "tests/napi",
   "tests/sqlite_extension_test",
   "tests/util/server",
+  "bench_io_uring",
 ]
 exclude = ["tests/util/std/hash/_wasm"]
 
@@ -396,6 +397,9 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 # unix deps
 nix = "=0.27.1"
 tokio-vsock = "0.7"
+
+# io_uring support (Linux only, requires kernel >= 5.6)
+tokio-uring = "0.5"
 
 # windows deps
 junction = "=1.2.0"

@@ -4,6 +4,9 @@ mod interface;
 mod ops;
 mod std_fs;
 
+#[cfg(all(target_os = "linux", feature = "io_uring"))]
+mod io_uring;
+
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -26,6 +29,12 @@ pub use crate::ops::OperationError;
 use crate::ops::*;
 pub use crate::std_fs::RealFs;
 pub use crate::std_fs::open_options_for_checked_path;
+
+// io_uring support (Linux only, kernel >= 5.6)
+#[cfg(all(target_os = "linux", feature = "io_uring"))]
+pub use crate::io_uring::init_io_uring;
+#[cfg(all(target_os = "linux", feature = "io_uring"))]
+pub use crate::io_uring::is_io_uring_available;
 
 pub trait FsPermissions {
   #[must_use = "the resolved return value to mitigate time-of-check to time-of-use issues"]

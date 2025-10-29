@@ -195,6 +195,51 @@ impl FileSystem for RealFs {
     stat(path)
   }
   async fn stat_async(&self, path: CheckedPathBuf) -> FsResult<FsStat> {
+    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    {
+      use crate::io_uring;
+      // Try to use io_uring if available
+      if io_uring::is_io_uring_available() {
+        let path_owned = path.to_path_buf();
+        return spawn_blocking(move || {
+          // Run tokio-uring in a blocking context
+          let metadata = tokio_uring::start(async move {
+            io_uring::stat_with_io_uring(&path_owned).await
+          })?;
+
+          // Convert std::fs::Metadata to FsStat
+          #[cfg(unix)]
+          {
+            use std::os::unix::fs::MetadataExt;
+            Ok(FsStat {
+              is_file: metadata.is_file(),
+              is_directory: metadata.is_dir(),
+              is_symlink: metadata.is_symlink(),
+              size: metadata.len(),
+              mtime: metadata.mtime().into(),
+              atime: metadata.atime().into(),
+              birthtime: metadata.ctime().into(),
+              dev: metadata.dev(),
+              ino: metadata.ino(),
+              mode: metadata.mode(),
+              nlink: metadata.nlink(),
+              uid: metadata.uid(),
+              gid: metadata.gid(),
+              rdev: metadata.rdev(),
+              blksize: metadata.blksize(),
+              blocks: metadata.blocks(),
+              is_block_device: metadata.file_type().is_block_device(),
+              is_char_device: metadata.file_type().is_char_device(),
+              is_fifo: metadata.file_type().is_fifo(),
+              is_socket: metadata.file_type().is_socket(),
+            })
+          }
+        })
+        .await?;
+      }
+    }
+
+    // Fallback to standard implementation
     spawn_blocking(move || stat(&path)).await?
   }
 
@@ -411,6 +456,28 @@ impl FileSystem for RealFs {
     options: OpenOptions,
     data: Vec<u8>,
   ) -> FsResult<()> {
+    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    {
+      use crate::io_uring;
+      // Try to use io_uring if available for simple write cases
+      if io_uring::is_io_uring_available()
+        && options.read == false
+        && options.write == true
+        && options.create == true
+        && options.truncate == true {
+        let path_owned = path.to_path_buf();
+        return spawn_blocking(move || {
+          // Run tokio-uring in a blocking context
+          tokio_uring::start(async move {
+            io_uring::write_file_with_io_uring(&path_owned, data).await
+          })
+          .map_err(Into::into)
+        })
+        .await?;
+      }
+    }
+
+    // Fallback to standard implementation
     let mut file = open_with_checked_path(options, &path.as_checked_path())?;
     spawn_blocking(move || {
       #[cfg(unix)]
@@ -440,6 +507,24 @@ impl FileSystem for RealFs {
     &'a self,
     path: CheckedPathBuf,
   ) -> FsResult<Cow<'static, [u8]>> {
+    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    {
+      use crate::io_uring;
+      // Try to use io_uring if available
+      if io_uring::is_io_uring_available() {
+        let path_owned = path.to_path_buf();
+        return spawn_blocking(move || {
+          // Run tokio-uring in a blocking context
+          let result = tokio_uring::start(async move {
+            io_uring::read_file_with_io_uring(&path_owned).await
+          });
+          result.map(Cow::Owned).map_err(Into::into)
+        })
+        .await?;
+      }
+    }
+
+    // Fallback to standard implementation
     let mut file = open_with_checked_path(
       OpenOptions {
         read: true,
