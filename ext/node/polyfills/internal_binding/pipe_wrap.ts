@@ -24,6 +24,13 @@
 // - https://github.com/nodejs/node/blob/master/src/pipe_wrap.cc
 // - https://github.com/nodejs/node/blob/master/src/pipe_wrap.h
 
+import { core, primordials } from "ext:core/mod.js";
+const { internalRidSymbol } = core;
+import {
+  op_node_pipe_accept,
+  op_node_pipe_connect,
+  op_node_pipe_listen,
+} from "ext:core/ops";
 import { notImplemented } from "ext:deno_node/_utils.ts";
 import { unreachable } from "ext:deno_node/_util/asserts.ts";
 import { ConnectionWrap } from "ext:deno_node/internal_binding/connection_wrap.ts";
@@ -33,6 +40,7 @@ import {
 } from "ext:deno_node/internal_binding/async_wrap.ts";
 import { LibuvStreamWrap } from "ext:deno_node/internal_binding/stream_wrap.ts";
 import { codeMap } from "ext:deno_node/internal_binding/uv.ts";
+import { uvTranslateSysError } from "ext:deno_node/internal_binding/_libuv_winerror.ts";
 import { delay } from "ext:deno_node/_util/async.ts";
 import {
   kStreamBaseField,
@@ -45,15 +53,101 @@ import {
 } from "ext:deno_node/internal_binding/_listen.ts";
 import { isWindows } from "ext:deno_node/_util/os.ts";
 import { fs } from "ext:deno_node/internal_binding/constants.ts";
-import { primordials } from "ext:core/mod.js";
 
 const {
   FunctionPrototypeCall,
   MapPrototypeGet,
+  ObjectDefineProperty,
   ObjectPrototypeIsPrototypeOf,
   PromisePrototypeThen,
   ReflectHas,
 } = primordials;
+
+/**
+ * Wrapper class for Windows named pipe connections.
+ * Implements the StreamBase interface required by LibuvStreamWrap.
+ */
+class WindowsNamedPipeConn implements StreamBase {
+  #rid: number;
+  #unref = false;
+  #pendingWrites = 0;
+  #closeRequested = false;
+  #closed = false;
+
+  constructor(rid: number) {
+    this.#rid = rid;
+    ObjectDefineProperty(this, internalRidSymbol, {
+      __proto__: null,
+      enumerable: false,
+      value: rid,
+    });
+  }
+
+  async read(buffer: Uint8Array): Promise<number | null> {
+    if (buffer.length === 0) {
+      return 0;
+    }
+    if (this.#closed) {
+      return null;
+    }
+    try {
+      const nread = await core.read(this.#rid, buffer);
+      return nread === 0 ? null : nread;
+    } catch {
+      // Resource closed or error - return EOF
+      return null;
+    }
+  }
+
+  async write(data: Uint8Array): Promise<number> {
+    if (this.#closed || this.#closeRequested) {
+      return 0;
+    }
+    this.#pendingWrites++;
+    try {
+      const nwritten = await core.write(this.#rid, data);
+      return nwritten;
+    } finally {
+      this.#pendingWrites--;
+      // If close was requested and this was the last pending write, close now
+      if (this.#closeRequested && this.#pendingWrites === 0) {
+        this.#doClose();
+      }
+    }
+  }
+
+  #doClose(): void {
+    if (this.#closed) {
+      return;
+    }
+    this.#closed = true;
+    try {
+      core.close(this.#rid);
+    } catch {
+      // Already closed
+    }
+  }
+
+  close(): void {
+    if (this.#closed) {
+      return;
+    }
+    this.#closeRequested = true;
+    // If no pending writes, close immediately
+    if (this.#pendingWrites === 0) {
+      this.#doClose();
+    }
+    // Otherwise, close will happen when pending writes complete
+  }
+
+  ref(): void {
+    this.#unref = false;
+  }
+
+  unref(): void {
+    this.#unref = true;
+  }
+}
 
 export enum socketType {
   SOCKET,
@@ -76,6 +170,9 @@ export class Pipe extends ConnectionWrap {
 
   #closed = false;
   #acceptBackoffDelay?: number;
+
+  // Windows named pipe server resource ID
+  #winPipeServerRid?: number;
 
   constructor(type: number, conn?: Deno.UnixConn | StreamBase) {
     let provider: providerType;
@@ -146,8 +243,46 @@ export class Pipe extends ConnectionWrap {
    */
   connect(req: PipeConnectWrap, address: string) {
     if (isWindows) {
-      // REF: https://github.com/denoland/deno/issues/10244
-      notImplemented("Pipe.prototype.connect - Windows");
+      // Use Windows named pipe ops
+      PromisePrototypeThen(
+        op_node_pipe_connect(address),
+        (rid: number) => {
+          this.#address = req.address = address;
+          this[kStreamBaseField] = new WindowsNamedPipeConn(rid);
+
+          try {
+            this.afterConnect(req, 0);
+          } catch {
+            // swallow callback errors.
+          }
+        },
+        (e: Error & { code?: string; errno?: number }) => {
+          // Try to map the error code
+          let errCode = e.code;
+          if (!errCode) {
+            // Check for Deno error types by name or prototype
+            if (
+              e.name === "NotFound" ||
+              ObjectPrototypeIsPrototypeOf(Deno.errors.NotFound.prototype, e)
+            ) {
+              errCode = "ENOENT";
+            } else if (typeof e.errno === "number") {
+              // Map Windows system error to UV error code
+              errCode = uvTranslateSysError(e.errno);
+            }
+          }
+          const code = MapPrototypeGet(codeMap, errCode ?? "UNKNOWN") ??
+            MapPrototypeGet(codeMap, "UNKNOWN")!;
+
+          try {
+            this.afterConnect(req, code);
+          } catch {
+            // swallow callback errors.
+          }
+        },
+      );
+
+      return 0;
     }
 
     const connectOptions: Deno.UnixConnectOptions = {
@@ -191,13 +326,30 @@ export class Pipe extends ConnectionWrap {
    */
   listen(backlog: number): number {
     if (isWindows) {
-      // REF: https://github.com/denoland/deno/issues/10244
-      notImplemented("Pipe.prototype.listen - Windows");
+      // Use Windows named pipe ops
+      this.#backlog = this.#pendingInstances;
+
+      let rid: number;
+      try {
+        rid = op_node_pipe_listen(this.#address!);
+      } catch (e) {
+        if (ObjectPrototypeIsPrototypeOf(Deno.errors.NotCapable.prototype, e)) {
+          throw e;
+        }
+        return MapPrototypeGet(
+          codeMap,
+          (e as Error & { code?: string }).code ?? "UNKNOWN",
+        ) ??
+          MapPrototypeGet(codeMap, "UNKNOWN")!;
+      }
+
+      this.#winPipeServerRid = rid;
+      this.#acceptWindows();
+
+      return 0;
     }
 
-    this.#backlog = isWindows
-      ? this.#pendingInstances
-      : ceilPowOf2(backlog + 1);
+    this.#backlog = ceilPowOf2(backlog + 1);
 
     const listenOptions = {
       path: this.#address!,
@@ -356,6 +508,74 @@ export class Pipe extends ConnectionWrap {
     return this.#accept();
   }
 
+  /** Accept new connections on Windows named pipes. */
+  async #acceptWindows(): Promise<void> {
+    if (this.#closed) {
+      return;
+    }
+
+    if (this.#connections > this.#backlog!) {
+      this.#acceptBackoffWindows();
+      return;
+    }
+
+    let connectionRid: number;
+
+    try {
+      connectionRid = await op_node_pipe_accept(this.#winPipeServerRid!);
+    } catch (e) {
+      if (
+        ObjectPrototypeIsPrototypeOf(Deno.errors.BadResource.prototype, e) &&
+        this.#closed
+      ) {
+        // Server has closed.
+        return;
+      }
+
+      try {
+        // TODO(cmorten): map errors to appropriate error codes.
+        this.onconnection!(MapPrototypeGet(codeMap, "UNKNOWN")!, undefined);
+      } catch {
+        // swallow callback errors.
+      }
+
+      this.#acceptBackoffWindows();
+      return;
+    }
+
+    // Reset the backoff delay upon successful accept.
+    this.#acceptBackoffDelay = undefined;
+
+    const conn = new WindowsNamedPipeConn(connectionRid);
+    const connectionHandle = new Pipe(socketType.SOCKET, conn);
+    this.#connections++;
+
+    try {
+      this.onconnection!(0, connectionHandle);
+    } catch {
+      // swallow callback errors.
+    }
+
+    return this.#acceptWindows();
+  }
+
+  /** Handle backoff delays following an unsuccessful accept on Windows. */
+  async #acceptBackoffWindows() {
+    if (!this.#acceptBackoffDelay) {
+      this.#acceptBackoffDelay = INITIAL_ACCEPT_BACKOFF_DELAY;
+    } else {
+      this.#acceptBackoffDelay *= 2;
+    }
+
+    if (this.#acceptBackoffDelay >= MAX_ACCEPT_BACKOFF_DELAY) {
+      this.#acceptBackoffDelay = MAX_ACCEPT_BACKOFF_DELAY;
+    }
+
+    await delay(this.#acceptBackoffDelay);
+
+    this.#acceptWindows();
+  }
+
   /** Handle server closure. */
   override _onClose(): number {
     this.#closed = true;
@@ -368,10 +588,19 @@ export class Pipe extends ConnectionWrap {
     this.#acceptBackoffDelay = undefined;
 
     if (this.provider === providerType.PIPESERVERWRAP) {
-      try {
-        this.#listener.close();
-      } catch {
-        // listener already closed
+      if (isWindows && this.#winPipeServerRid !== undefined) {
+        try {
+          core.close(this.#winPipeServerRid);
+        } catch {
+          // already closed
+        }
+        this.#winPipeServerRid = undefined;
+      } else {
+        try {
+          this.#listener.close();
+        } catch {
+          // listener already closed
+        }
       }
     }
 
