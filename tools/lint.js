@@ -73,6 +73,7 @@ async function dlint() {
     ":!:cli/tsc/compiler.d.ts",
     ":!:ext/node/polyfills/deps/**",
     ":!:runtime/examples/",
+    ":!:libs/eszip/testdata/**",
     ":!:target/",
     ":!:tests/ffi/tests/test.js",
     ":!:tests/registry/**",
@@ -381,7 +382,7 @@ async function ensureNoNewTopLevelEntries() {
     throw new Error(
       `New top-level entries detected: ${newEntries.join(", ")}. ` +
         `Only the following top-level entries are allowed: ${
-          allowed.join(", ")
+          Array.from(allowed).join(", ")
         }`,
     );
   }

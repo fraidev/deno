@@ -2,7 +2,7 @@
 
 [package]
 name = "deno"
-version = "2.6.8"
+version = "2.6.9"
 authors.workspace = true
 default-run = "deno"
 edition.workspace = true
@@ -112,6 +112,7 @@ clap = { workspace = true, features = ["env", "string", "wrap_help", "error-cont
 clap_complete.workspace = true
 clap_complete_fig.workspace = true
 color-print.workspace = true
+comrak.workspace = true
 console_static_text.workspace = true
 crossterm.workspace = true
 dashmap.workspace = true
@@ -128,6 +129,7 @@ fancy-regex.workspace = true
 faster-hex.workspace = true
 # If you disable the default __vendored_zlib_ng feature above, you _must_ be able to link against `-lz`.
 flate2.workspace = true
+fluent-uri.workspace = true
 fs3.workspace = true
 http.workspace = true
 http-body.workspace = true

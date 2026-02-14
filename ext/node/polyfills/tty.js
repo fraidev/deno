@@ -21,6 +21,16 @@
 
 import { op_node_is_tty, op_set_raw } from "ext:core/ops";
 import { core, primordials } from "ext:core/mod.js";
+import { ERR_INVALID_FD } from "ext:deno_node/internal/errors.ts";
+import { validateInteger } from "ext:deno_node/internal/validators.mjs";
+import { TTY } from "ext:deno_node/internal_binding/tty_wrap.ts";
+import { Socket } from "node:net";
+import { setReadStream } from "ext:deno_node/_process/streams.mjs";
+import * as io from "ext:deno_io/12_io.js";
+import { getRid } from "ext:deno_node/internal/fs/fd_map.ts";
+import { release } from "node:os";
+import process from "node:process";
+
 const {
   ArrayPrototypeSome,
   ObjectEntries,
@@ -34,15 +44,6 @@ const {
 } = primordials;
 const { internalRidSymbol } = core;
 
-import { ERR_INVALID_FD } from "ext:deno_node/internal/errors.ts";
-import { validateInteger } from "ext:deno_node/internal/validators.mjs";
-import { TTY } from "ext:deno_node/internal_binding/tty_wrap.ts";
-import { Socket } from "node:net";
-import { setReadStream } from "ext:deno_node/_process/streams.mjs";
-import * as io from "ext:deno_io/12_io.js";
-import { getRid } from "ext:deno_node/internal/fs/fd_map.ts";
-import { release } from "node:os";
-import process from "node:process";
 
 // Helper class to wrap a resource ID as a stream-like object.
 // Used for PTY file descriptors (fd > 2) that come from NAPI modules like node-pty.
